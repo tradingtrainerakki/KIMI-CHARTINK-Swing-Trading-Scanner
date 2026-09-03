@@ -1,7 +1,6 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
 from datetime import datetime
 
 # ─── Page Config ───
@@ -10,8 +9,6 @@ st.title("📊 SMC Swing Screener — Nifty 200")
 st.caption("RSI 30-45 | Pullback in Uptrend | Volume Spike | Market Cap > 10K Cr")
 
 # ─── Full Nifty 200 Stock List (Yahoo Finance Tickers) ───
-# Note: Nifty 200 = Nifty 100 + Nifty Midcap 100
-# Tickers verified for Yahoo Finance (.NS suffix for NSE)
 NIFTY_200 = [
     # ─── Nifty 100 (Large Cap) ───
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS",
@@ -34,7 +31,7 @@ NIFTY_200 = [
     "MUTHOOTFIN.NS", "PFC.NS", "RECLTD.NS", "SHRIRAMFIN.NS", "BAJAJHLDNG.NS",
     "LICHSGFIN.NS", "MANAPPURAM.NS", "ABCAPITAL.NS", "SRF.NS", "DEEPAKNTR.NS",
     "ATUL.NS", "UPL.NS", "TATACHEM.NS", "COROMANDEL.NS", "PIIND.NS",
-    
+
     # ─── Nifty Midcap 100 (Remaining for Nifty 200) ───
     "ADANIGREEN.NS", "TRENT.NS", "BOSCHLTD.NS", "MRF.NS", "PAGEIND.NS",
     "SHREECEM.NS", "3MINDIA.NS", "GLAND.NS", "SANOFI.NS", "PFIZER.NS",
@@ -65,13 +62,29 @@ NIFTY_200 = [
     "UCOBANK.NS", "CENTRALBK.NS", "KARURVYSYA.NS", "SOUTHBANK.NS", "TMB.NS",
     "CUB.NS", "DCBBANK.NS", "J&KBANK.NS", "CSBBANK.NS", "EQUITASBNK.NS",
     "UJJIVANSFB.NS", "MIDHANI.NS", "MSTC.NS", "NBCC.NS", "RAILTEL.NS",
-    "RAILVikas.NS", "RVNL.NS", "IRCON.NS", "SJVN.NS", "PTCINDIA.NS",
+    "RVNL.NS", "IRCON.NS", "SJVN.NS", "PTCINDIA.NS",
     "JSWENERGY.NS", "TORRENTPOWER.NS", "CESC.NS", "LAXMIMACH.NS", "TTKPRESTIG.NS",
     "HAWKINS.NS", "STOVEKRAFT.NS", "NAVA.NS", "RCF.NS", "GSFC.NS",
     "MFL.NS", "SUMICHEM.NS", "BAYERCROP.NS", "RALLIS.NS", "DHANUKA.NS",
     "INSECTICID.NS", "SHARDACROP.NS", "BASF.NS", "TATVA.NS", "CLEAN.NS",
     "NAVINFLUOR.NS", "VINATIORGA.NS", "ALKYLAMINE.NS", "BALAMINES.NS"
 ]
+
+# ─── Manual Indicator Calculations (pandas_ta hata diya — purana/unmaintained
+# library hai jo naye Python versions par install hi fail ho jaati hai.
+# RSI aur SMA seedhe pandas se calculate karna zyada bharosemand hai) ──
+def calc_rsi(close, length=14):
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1 / length, min_periods=length, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / length, min_periods=length, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def calc_sma(close, length):
+    return close.rolling(length).mean()
 
 # ─── Sidebar Filters ───
 st.sidebar.header("⚙️ Filters")
@@ -87,11 +100,16 @@ run_btn = st.sidebar.button("🚀 Run Screener", type="primary")
 
 # ─── Caching for performance ───
 @st.cache_data(ttl=3600)
-def fetch_stock_data(symbol, period="6mo"):
+def fetch_stock_data(symbol, period="1y"):
+    """period 6mo se 1y kiya — 200-day SMA ke liye kam se kam ~250
+    trading days ka data chahiye, 6mo mein sirf ~125 din milte the
+    jisse SMA200 hamesha NaN aata."""
     try:
         df = yf.download(symbol, period=period, interval="1d", progress=False, auto_adjust=True)
-        if df.empty or len(df) < 60:
+        if df.empty or len(df) < 210:
             return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
         return df
     except Exception:
         return None
@@ -107,7 +125,7 @@ def get_market_cap(symbol):
 
 def check_filters(df, mcap_cr, symbol):
     try:
-        if df is None or len(df) < 60:
+        if df is None or len(df) < 210:
             return None
 
         close = df["Close"]
@@ -122,19 +140,19 @@ def check_filters(df, mcap_cr, symbol):
         if mcap_cr < mcap_min:
             return None
 
-        # Indicators
-        rsi_series = ta.rsi(close, length=14)
+        # Indicators — ab manually calculate ho rahe hain
+        rsi_series = calc_rsi(close, length=14)
         rsi = float(rsi_series.iloc[-1])
 
-        sma50_series = ta.sma(close, length=50)
+        sma50_series = calc_sma(close, length=50)
         sma50 = float(sma50_series.iloc[-1])
 
-        sma200_series = ta.sma(close, length=200)
+        sma200_series = calc_sma(close, length=200)
         sma200 = float(sma200_series.iloc[-1])
 
         # Volume: last 3 days avg vs previous lookback days avg
         vol_3d = float(volume.iloc[-3:].mean())
-        vol_prev = float(volume.iloc[-(lookback_days+3):-3].mean())
+        vol_prev = float(volume.iloc[-(lookback_days + 3):-3].mean())
 
         if pd.isna(rsi) or pd.isna(sma50) or pd.isna(sma200):
             return None
@@ -171,10 +189,10 @@ if run_btn:
 
     for i, symbol in enumerate(NIFTY_200):
         progress.progress((i + 1) / total, text=f"Checking {symbol.replace('.NS', '')}... ({i+1}/{total})")
-        
+
         df = fetch_stock_data(symbol)
         mcap = get_market_cap(symbol)
-        
+
         result = check_filters(df, mcap, symbol)
         if result:
             results.append(result)
