@@ -5,8 +5,30 @@ from datetime import datetime
 
 # ─── Page Config ───
 st.set_page_config(page_title="SMC Swing Screener", layout="wide")
+
+# ─── AUTH ───
+USERS = {"akki": "Ca@1809"}
+
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.markdown("## 📊 SMC Swing Screener — Login")
+    u = st.text_input("Username")
+    p = st.text_input("Password", type="password")
+    if st.button("Login"):
+        if USERS.get(u) == p:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("❌ Galat username/password")
+    st.stop()
+
 st.title("📊 SMC Swing Screener — Nifty 200")
 st.caption("RSI 30-45 | Pullback in Uptrend | Volume Spike | Market Cap > 10K Cr")
+if st.button("🚪 Logout"):
+    st.session_state.authenticated = False
+    st.rerun()
 
 # ─── Full Nifty 200 Stock List (Yahoo Finance Tickers) ───
 NIFTY_200 = [
@@ -199,11 +221,24 @@ if run_btn:
 
     progress.empty()
 
+    # Results ko session_state mein save karo — warna page par kahin aur
+    # click karte hi (koi bhi rerun trigger hote hi) ye data gayab ho
+    # jaata tha, kyunki 'results' sirf ek local variable tha
+    st.session_state["smc_results"] = results
+    st.session_state["smc_total"] = total
+    st.session_state["smc_scan_time"] = datetime.now().strftime("%d %b %Y, %H:%M")
+
+# ─── Display results (session_state se — persist rehta hai) ───
+if "smc_results" in st.session_state:
+    results = st.session_state["smc_results"]
+    total = st.session_state["smc_total"]
+    scan_time = st.session_state.get("smc_scan_time", "")
+
     if results:
         df_results = pd.DataFrame(results)
         df_results = df_results.sort_values(by="RSI", ascending=False)
 
-        st.success(f"✅ {len(results)} stocks found out of {total}!")
+        st.success(f"✅ {len(results)} stocks found out of {total}! (Scan: {scan_time})")
         st.dataframe(df_results, use_container_width=True, height=500)
 
         csv = df_results.to_csv(index=False).encode("utf-8")
