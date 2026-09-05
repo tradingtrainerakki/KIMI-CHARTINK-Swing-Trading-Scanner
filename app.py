@@ -24,14 +24,54 @@ if not st.session_state.authenticated:
             st.error("❌ Galat username/password")
     st.stop()
 
-st.title("📊 SMC Swing Screener — Nifty 200")
+st.title("📊 SMC Swing Screener")
 st.caption("RSI 30-45 | Pullback in Uptrend | Volume Spike | Market Cap > 10K Cr")
 if st.button("🚪 Logout"):
     st.session_state.authenticated = False
     st.rerun()
 
-# ─── Full Nifty 200 Stock List (Yahoo Finance Tickers) ───
-NIFTY_200 = [
+# ─── UNIVERSE SELECTION — NSE se live list, fallback hardcoded ───
+import requests
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_nse_index_list(index_name, debug):
+    file_map = {
+        "Nifty 100": "ind_nifty100list.csv",
+        "Nifty 200": "ind_nifty200list.csv",
+        "Nifty 500": "ind_nifty500list.csv",
+    }
+    try:
+        session = requests.Session()
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.nseindia.com/",
+        }
+        session.headers.update(headers)
+        try:
+            session.get("https://www.nseindia.com", timeout=10)
+        except Exception:
+            pass
+
+        url = f"https://archives.nseindia.com/content/indices/{file_map[index_name]}"
+        resp = session.get(url, timeout=15)
+        if resp.status_code == 200:
+            from io import StringIO
+            df = pd.read_csv(StringIO(resp.text))
+            symbol_col = "Symbol" if "Symbol" in df.columns else df.columns[2]
+            symbols = [s.strip() + ".NS" for s in df[symbol_col].astype(str).tolist()]
+            if len(symbols) > 50:
+                debug["universe"] = f"OK — {len(symbols)} symbols from NSE ({index_name})"
+                return symbols, "NSE live list"
+        debug["universe"] = f"HTTP {resp.status_code} ya kam symbols mile"
+    except Exception as e:
+        debug["universe"] = f"Exception: {type(e).__name__}: {str(e)[:150]}"
+
+    debug["universe"] = (debug.get("universe", "") + " — FALLBACK list use ho rahi hai (sirf ~100 stocks)")
+    return NIFTY_200_FALLBACK, "FALLBACK list (NSE fetch fail)"
+
+# ─── Fallback list (sirf tab use hoti hai jab NSE se live fetch fail ho) ───
+NIFTY_200_FALLBACK = [
     # ─── Nifty 100 (Large Cap) ───
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS",
     "BHARTIARTL.NS", "ITC.NS", "SBIN.NS", "LICI.NS", "HINDUNILVR.NS",
@@ -110,6 +150,8 @@ def calc_sma(close, length):
 
 # ─── Sidebar Filters ───
 st.sidebar.header("⚙️ Filters")
+
+universe_choice = st.sidebar.selectbox("Universe", ["Nifty 100", "Nifty 200", "Nifty 500"], index=1)
 
 rsi_min = st.sidebar.slider("RSI Min", 20, 40, 30)
 rsi_max = st.sidebar.slider("RSI Max", 35, 60, 45)
@@ -205,11 +247,16 @@ def check_filters(df, mcap_cr, symbol):
 
 # ─── Main Logic ───
 if run_btn:
-    progress = st.progress(0, text="Scanning Nifty 200... Please wait")
-    results = []
-    total = len(NIFTY_200)
+    debug = {}
+    symbols, universe_source = get_nse_index_list(universe_choice, debug)
+    st.session_state["smc_debug"] = debug
+    st.session_state["smc_universe_source"] = universe_source
 
-    for i, symbol in enumerate(NIFTY_200):
+    progress = st.progress(0, text=f"Scanning {universe_choice}... Please wait")
+    results = []
+    total = len(symbols)
+
+    for i, symbol in enumerate(symbols):
         progress.progress((i + 1) / total, text=f"Checking {symbol.replace('.NS', '')}... ({i+1}/{total})")
 
         df = fetch_stock_data(symbol)
@@ -226,19 +273,27 @@ if run_btn:
     # jaata tha, kyunki 'results' sirf ek local variable tha
     st.session_state["smc_results"] = results
     st.session_state["smc_total"] = total
+    st.session_state["smc_universe_name"] = universe_choice
     st.session_state["smc_scan_time"] = datetime.now().strftime("%d %b %Y, %H:%M")
+
+# ─── Debug panel — NSE list fetch fail ho to asli wajah dikhegi ──
+if "smc_debug" in st.session_state:
+    with st.expander("🐛 Debug Info (universe fetch status)"):
+        for k, v in st.session_state["smc_debug"].items():
+            st.markdown(f"**{k}**: {v}")
 
 # ─── Display results (session_state se — persist rehta hai) ───
 if "smc_results" in st.session_state:
     results = st.session_state["smc_results"]
     total = st.session_state["smc_total"]
     scan_time = st.session_state.get("smc_scan_time", "")
+    universe_name = st.session_state.get("smc_universe_name", "")
 
     if results:
         df_results = pd.DataFrame(results)
         df_results = df_results.sort_values(by="RSI", ascending=False)
 
-        st.success(f"✅ {len(results)} stocks found out of {total}! (Scan: {scan_time})")
+        st.success(f"✅ {len(results)} stocks found out of {total} ({universe_name})! (Scan: {scan_time})")
         st.dataframe(df_results, use_container_width=True, height=500)
 
         csv = df_results.to_csv(index=False).encode("utf-8")
@@ -275,7 +330,7 @@ else:
     | Volume | Last 3 days > {volume_mult}x of previous {lookback_days} days avg |
     | Market Cap | > {mcap_min:,} Cr |
     | Price | > ₹{price_min} |
-    | Universe | **Nifty 200** |
+    | Universe | **{universe_choice}** |
     """)
 
 st.markdown("---")
